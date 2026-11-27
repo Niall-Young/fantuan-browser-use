@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { getDefaultSession, getPort } from "./config.mjs";
-import { getHealth, sendCommand, startDaemon, stopDaemon } from "./client.mjs";
+import { getHealth, sendCommand, startDaemon, stopDaemon, waitForExtension } from "./client.mjs";
 
 const HELP_TEXT = `fantuan-browser — Silent, Tab-Group-isolated browser automation for AI agents
 
@@ -212,7 +212,11 @@ export async function runCli(argv, io = { out: console.log, err: console.error }
   }
 
   if (command === "status") {
-    const health = await startDaemon(opts.port);
+    const wasRunning = Boolean(await getHealth(opts.port));
+    let health = await startDaemon(opts.port);
+    if (!wasRunning && !health.extensionConnected) {
+      health = (await waitForExtension(opts.port)) || health;
+    }
     let sessions = [];
     if (health.extensionConnected) {
       const s = await sendCommand("sessions", {}, clientOpts);

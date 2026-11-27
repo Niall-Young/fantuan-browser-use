@@ -3,6 +3,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
+  DEFAULT_EXTENSION_WAIT_MS,
   DEFAULT_HOST,
   REQUEST_TIMEOUT_MS,
   getLogFile,
@@ -82,11 +83,30 @@ export async function stopDaemon(port = getPort()) {
   return { stopped: true };
 }
 
+export async function waitForExtension(
+  port = getPort(),
+  waitMs = DEFAULT_EXTENSION_WAIT_MS
+) {
+  const deadline = Date.now() + Math.max(0, waitMs);
+  while (Date.now() <= deadline) {
+    const health = await getHealth(port);
+    if (health?.extensionConnected) return health;
+    if (Date.now() >= deadline) break;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  return getHealth(port);
+}
+
 export async function sendCommand(action, params = {}, options = {}) {
   const port = options.port || getPort();
   const timeoutMs = options.timeoutMs || REQUEST_TIMEOUT_MS;
+  const extensionWaitMs =
+    options.extensionWaitMs ?? DEFAULT_EXTENSION_WAIT_MS;
 
-  await startDaemon(port);
+  const health = await startDaemon(port);
+  if (!health?.extensionConnected && extensionWaitMs > 0) {
+    await waitForExtension(port, extensionWaitMs);
+  }
 
   const res = await fetch(`${baseUrl(port)}/api/command`, {
     method: "POST",

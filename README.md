@@ -83,6 +83,7 @@ fantuan-browser -s demo cleanup
 | `FANTUAN_BROWSER_PORT` | `19222` | 本地守护进程监听端口（也可在扩展弹窗中修改） |
 | `FANTUAN_BROWSER_SESSION` | `default` | 默认会话名（对应 `Fantuan` 或 `Fantuan:<session>` 分组） |
 | `FANTUAN_BROWSER_STATE_DIR` | `~/.fantuan-browser` | 守护进程 PID 与日志目录 |
+| `FANTUAN_BROWSER_IDLE_MS` | `600000` | 守护进程空闲自动退出时间（毫秒，默认 10 分钟；设为 `0` 可禁用自动退出） |
 
 ### 项目结构
 
@@ -190,6 +191,7 @@ fantuan-browser -s demo cleanup
 | `FANTUAN_BROWSER_PORT` | `19222` | Local daemon port (also configurable in the extension popup) |
 | `FANTUAN_BROWSER_SESSION` | `default` | Default session name (`Fantuan` or `Fantuan:<session>` Tab Group) |
 | `FANTUAN_BROWSER_STATE_DIR` | `~/.fantuan-browser` | Directory for daemon PID and log files |
+| `FANTUAN_BROWSER_IDLE_MS` | `600000` | Idle auto-shutdown timeout in ms (default 10 minutes; set `0` to disable) |
 
 ### Project Structure
 

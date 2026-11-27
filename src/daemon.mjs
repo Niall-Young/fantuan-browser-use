@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import {
   DEFAULT_HOST,
   REQUEST_TIMEOUT_MS,
+  getIdleTimeoutMs,
   getPidFile,
   getPort,
   getStateDir,
@@ -55,13 +56,51 @@ export function createDaemonServer(options = {}) {
     requestTimeoutMs = REQUEST_TIMEOUT_MS,
     allowOrigin = isExtensionOrigin,
     writePid = false,
+    idleTimeoutMs = 0,
+    onIdleShutdown = null,
   } = options;
 
   let extensionConn = null;
   let extensionMeta = null;
   let connectedAt = null;
+  let lastActivityAt = Date.now();
+  let idleTimer = null;
+  let closed = false;
   const startedAt = new Date().toISOString();
   const pending = new Map();
+
+  function clearIdleTimer() {
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  }
+
+  function scheduleIdleTimer() {
+    clearIdleTimer();
+    if (closed || !idleTimeoutMs || idleTimeoutMs <= 0) return;
+    idleTimer = setTimeout(() => {
+      idleTimer = null;
+      if (closed) return;
+      if (pending.size > 0) {
+        scheduleIdleTimer();
+        return;
+      }
+      console.log(
+        `[fantuan-browser] daemon idle for ${idleTimeoutMs}ms, shutting down`
+      );
+      close().finally(() => {
+        if (typeof onIdleShutdown === "function") {
+          onIdleShutdown();
+        }
+      });
+    }, idleTimeoutMs);
+  }
+
+  function touchActivity() {
+    lastActivityAt = Date.now();
+    scheduleIdleTimer();
+  }
 
   function failAllPending(reason) {
     for (const [id, entry] of pending.entries()) {
@@ -114,6 +153,8 @@ export function createDaemonServer(options = {}) {
         host,
         port,
         startedAt,
+        lastActivityAt: new Date(lastActivityAt).toISOString(),
+        idleTimeoutMs,
         extensionConnected: Boolean(extensionConn && !extensionConn.closed),
         extensionConnectedAt: connectedAt,
         extension: extensionMeta,
@@ -144,14 +185,17 @@ export function createDaemonServer(options = {}) {
         return;
       }
 
+      touchActivity();
       try {
         const result = await sendToExtension(
           action,
           params,
           typeof timeoutMs === "number" ? timeoutMs : requestTimeoutMs
         );
+        touchActivity();
         sendJson(res, 200, { ok: true, result });
       } catch (err) {
+        touchActivity();
         const status = err.message.includes("not connected") ? 503 : 500;
         sendJson(res, status, { ok: false, error: err.message });
       }
@@ -233,6 +277,8 @@ export function createDaemonServer(options = {}) {
       fs.writeFileSync(getPidFile(), String(process.pid), "utf8");
     }
 
+    touchActivity();
+
     const addr = server.address();
     return {
       host,
@@ -241,6 +287,9 @@ export function createDaemonServer(options = {}) {
   }
 
   async function close() {
+    if (closed) return;
+    closed = true;
+    clearIdleTimer();
     failAllPending("Daemon shutting down");
     if (extensionConn && !extensionConn.closed) {
       extensionConn.close(1001, "Daemon shutting down");
@@ -271,12 +320,17 @@ const isMain =
     fs.realpathSync(fileURLToPath(import.meta.url));
 
 if (isMain) {
-  const daemon = createDaemonServer({ writePid: true });
+  const idleTimeoutMs = getIdleTimeoutMs();
+  const daemon = createDaemonServer({
+    writePid: true,
+    idleTimeoutMs,
+    onIdleShutdown: () => process.exit(0),
+  });
   daemon
     .start()
     .then(({ host, port }) => {
       console.log(
-        `[fantuan-browser] daemon listening on http://${host}:${port} (ws://${host}:${port}/ws)`
+        `[fantuan-browser] daemon listening on http://${host}:${port} (ws://${host}:${port}/ws, idleTimeoutMs=${idleTimeoutMs})`
       );
     })
     .catch((err) => {

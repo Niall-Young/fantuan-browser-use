@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createDaemonServer } from "../src/daemon.mjs";
+import { sendCommand } from "../src/client.mjs";
 import { parseArgs, runCli } from "../src/cli.mjs";
 
 test("parseArgs parses session, tab, flags, and positional arguments", () => {
@@ -267,5 +268,69 @@ test("daemon + CLI end-to-end with mock extension", async () => {
   fs.unlinkSync(shotPath);
 
   ext.close();
+  await daemon.close();
+});
+
+test("daemon automatically shuts down after idleTimeoutMs", async () => {
+  let idleFired = false;
+  const daemon = createDaemonServer({
+    port: 0,
+    allowOrigin: () => true,
+    idleTimeoutMs: 120,
+    onIdleShutdown: () => {
+      idleFired = true;
+    },
+  });
+  const { port } = await daemon.start();
+
+  const h1 = await fetch(`http://127.0.0.1:${port}/health`).then((r) => r.json());
+  assert.equal(h1.ok, true);
+  assert.equal(h1.idleTimeoutMs, 120);
+
+  await new Promise((r) => setTimeout(r, 250));
+  assert.equal(idleFired, true);
+
+  let reachable = true;
+  try {
+    await fetch(`http://127.0.0.1:${port}/health`);
+  } catch {
+    reachable = false;
+  }
+  assert.equal(reachable, false);
+});
+
+test("sendCommand waits for late-connecting extension on cold start", async () => {
+  const daemon = createDaemonServer({
+    port: 0,
+    allowOrigin: () => true,
+  });
+  const { port } = await daemon.start();
+
+  // Connect mock extension 200ms after sendCommand starts
+  let ext;
+  setTimeout(() => {
+    ext = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    ext.addEventListener("open", () => {
+      ext.send(JSON.stringify({ type: "hello", version: "0.1.0-test" }));
+    });
+    ext.addEventListener("message", (ev) => {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === "request") {
+        ext.send(
+          JSON.stringify({
+            type: "response",
+            id: msg.id,
+            ok: true,
+            result: { sessions: [] },
+          })
+        );
+      }
+    });
+  }, 200);
+
+  const res = await sendCommand("sessions", {}, { port, extensionWaitMs: 2000 });
+  assert.deepEqual(res, { sessions: [] });
+
+  ext?.close();
   await daemon.close();
 });
