@@ -37,6 +37,8 @@ Commands:
   text [--selector css] [--max N]     Extract visible page text
   eval <js>                           Evaluate JavaScript in the page
   screenshot [path] [--full-page]     Save silent background tab screenshot (PNG)
+  upload [@ref] <file...> [--selector css | --trigger @ref|css]
+                                      Silently upload local files (no Finder dialog)
   wait <ms | --selector css | --text str> [--timeout ms]
   back | forward | reload             History navigation
   cdp <Domain.method> [jsonParams]    Raw CDP command on current session tab
@@ -67,6 +69,10 @@ export function parseArgs(argv) {
       opts.port = Number(argv[++i]);
     } else if (arg === "--selector") {
       opts.flags.selector = argv[++i];
+    } else if (arg === "--ref") {
+      opts.flags.ref = argv[++i];
+    } else if (arg === "--trigger") {
+      opts.flags.trigger = argv[++i];
     } else if (arg === "--text") {
       opts.flags.text = argv[++i];
     } else if (arg === "--limit") {
@@ -367,6 +373,35 @@ export async function runCli(argv, io = { out: console.log, err: console.error }
     case "reload":
       result = await sendCommand(command, baseParams, clientOpts);
       break;
+    case "upload": {
+      const params = {
+        ...baseParams,
+        ...(opts.flags.selector ? { selector: opts.flags.selector } : {}),
+        ...(opts.flags.ref ? { ref: opts.flags.ref } : {}),
+        ...(opts.flags.trigger ? { trigger: opts.flags.trigger } : {}),
+        ...(opts.flags.timeoutMs ? { timeoutMs: opts.flags.timeoutMs } : {}),
+      };
+      let fileArgs = args;
+      if (!params.ref && !params.selector && !params.trigger && args[0]?.startsWith("@")) {
+        params.ref = args[0];
+        fileArgs = args.slice(1);
+      }
+      if (fileArgs.length === 0) {
+        throw new Error(
+          "Usage: fantuan-browser upload [@ref] <file...> [--selector css | --trigger @ref|css]"
+        );
+      }
+      const files = fileArgs.map((f) => {
+        const abs = path.resolve(f);
+        if (!fs.existsSync(abs)) {
+          throw new Error(`File not found: ${abs}`);
+        }
+        return abs;
+      });
+      params.files = files;
+      result = await sendCommand("upload", params, clientOpts);
+      break;
+    }
     case "cdp": {
       if (!args[0]) throw new Error("Usage: fantuan-browser cdp <Domain.method> [jsonParams]");
       const cdpParams = args[1] ? JSON.parse(args[1]) : {};

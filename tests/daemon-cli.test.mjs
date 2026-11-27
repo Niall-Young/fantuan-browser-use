@@ -108,6 +108,22 @@ test("daemon + CLI end-to-end with mock extension", async () => {
       return;
     }
 
+    if (msg.action === "upload") {
+      ext.send(
+        JSON.stringify({
+          type: "response",
+          id: msg.id,
+          ok: true,
+          result: {
+            tabId: 101,
+            mode: msg.params.trigger ? "intercept" : "direct",
+            files: msg.params.files,
+          },
+        })
+      );
+      return;
+    }
+
     ext.send(
       JSON.stringify({
         type: "response",
@@ -153,6 +169,18 @@ test("daemon + CLI end-to-end with mock extension", async () => {
   assert.equal(code3, 0);
   assert.equal(out[0], shotPath);
   assert.equal(fs.readFileSync(shotPath, "utf8"), "fake-png-bytes");
+
+  // 6. Run CLI upload (direct & intercept trigger)
+  out.length = 0;
+  const code4 = await runCli(
+    ["--port", String(port), "-s", "orca-worker", "upload", "--trigger", "@1", shotPath],
+    io
+  );
+  assert.equal(code4, 0);
+  const uploadAction = seenActions.find((a) => a.action === "upload");
+  assert.equal(uploadAction.params.trigger, "@1");
+  assert.deepEqual(uploadAction.params.files, [shotPath]);
+
   fs.unlinkSync(shotPath);
 
   ext.close();

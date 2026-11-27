@@ -210,9 +210,28 @@ async function connectWebSocket() {
 }
 
 // Debugger & tab lifecycle cleanup
+const fileChooserWaiters = new Map(); // tabId -> { resolve, reject, timer }
+
+chrome.debugger.onEvent.addListener((source, method, params) => {
+  if (method === "Page.fileChooserOpened" && source?.tabId != null) {
+    const waiter = fileChooserWaiters.get(source.tabId);
+    if (waiter) {
+      clearTimeout(waiter.timer);
+      fileChooserWaiters.delete(source.tabId);
+      waiter.resolve(params);
+    }
+  }
+});
+
 chrome.debugger.onDetach.addListener((source) => {
   if (source?.tabId != null) {
     attachedTabs.delete(source.tabId);
+    const waiter = fileChooserWaiters.get(source.tabId);
+    if (waiter) {
+      clearTimeout(waiter.timer);
+      fileChooserWaiters.delete(source.tabId);
+      waiter.reject(new Error("Debugger detached while waiting for file chooser"));
+    }
   }
 });
 
@@ -468,6 +487,49 @@ async function getBackendNodeCenter(tabId, backendNodeId) {
   const x = (quad[0] + quad[2] + quad[4] + quad[6]) / 4;
   const y = (quad[1] + quad[3] + quad[5] + quad[7]) / 4;
   return { x: Math.round(x), y: Math.round(y) };
+}
+
+async function waitForFileChooser(tabId, timeoutMs = 8_000) {
+  return new Promise((resolve, reject) => {
+    const prev = fileChooserWaiters.get(tabId);
+    if (prev) {
+      clearTimeout(prev.timer);
+      prev.reject(new Error("Superseded by another upload request"));
+    }
+    const timer = setTimeout(() => {
+      fileChooserWaiters.delete(tabId);
+      reject(new Error("Timed out waiting for file chooser dialog after clicking trigger"));
+    }, timeoutMs);
+    fileChooserWaiters.set(tabId, { resolve, reject, timer });
+  });
+}
+
+async function resolveBackendNodeId(tabId, { ref, selector }) {
+  if (ref) {
+    const normalized = ref.startsWith("@") ? ref : `@${ref}`;
+    const refMap = tabRefMaps.get(tabId);
+    const entry = refMap?.get(normalized);
+    if (!entry) {
+      throw new Error(
+        `Unknown ref "${normalized}". Run "snapshot" first to refresh element refs.`
+      );
+    }
+    return entry.backendDOMNodeId;
+  }
+
+  const sel = selector || 'input[type="file"]';
+  const doc = await cdp(tabId, "DOM.getDocument", { depth: 0 });
+  const found = await cdp(tabId, "DOM.querySelector", {
+    nodeId: doc.root.nodeId,
+    selector: sel,
+  });
+  if (!found?.nodeId) {
+    throw new Error(`File input selector not found: ${sel}`);
+  }
+  const described = await cdp(tabId, "DOM.describeNode", {
+    nodeId: found.nodeId,
+  });
+  return described.node.backendNodeId;
 }
 
 async function resolveTargetCoords(tabId, params) {
@@ -944,6 +1006,58 @@ async function handleAction(action, params) {
       await chrome.tabs.reload(tab.id);
       const loaded = await waitForTabComplete(tab.id);
       return { tabId: loaded.id, url: loaded.url, title: loaded.title };
+    }
+
+    case "upload": {
+      const { tab } = await resolveSessionTab(session, params.tabId);
+      const files = Array.isArray(params.files) ? params.files : [];
+      if (files.length === 0) {
+        throw new Error("Missing files to upload");
+      }
+
+      if (params.trigger) {
+        await cdp(tab.id, "Page.setInterceptFileChooserDialog", { enabled: true });
+        try {
+          const chooserPromise = waitForFileChooser(tab.id, params.timeoutMs || 8_000);
+          const triggerParams = params.trigger.startsWith("@")
+            ? { ref: params.trigger }
+            : { selector: params.trigger };
+          const coords = await resolveTargetCoords(tab.id, triggerParams);
+          await clickAt(tab.id, coords.x, coords.y);
+          const event = await chooserPromise;
+          if (!event?.backendNodeId) {
+            throw new Error("File chooser opened without a backendNodeId");
+          }
+          await cdp(tab.id, "DOM.setFileInputFiles", {
+            files,
+            backendNodeId: event.backendNodeId,
+          });
+          return {
+            tabId: tab.id,
+            mode: "intercept",
+            trigger: params.trigger,
+            files,
+          };
+        } finally {
+          await cdp(tab.id, "Page.setInterceptFileChooserDialog", {
+            enabled: false,
+          }).catch(() => {});
+        }
+      }
+
+      const backendNodeId = await resolveBackendNodeId(tab.id, {
+        ref: params.ref,
+        selector: params.selector,
+      });
+      await cdp(tab.id, "DOM.setFileInputFiles", {
+        files,
+        backendNodeId,
+      });
+      return {
+        tabId: tab.id,
+        mode: "direct",
+        files,
+      };
     }
 
     case "cdp": {

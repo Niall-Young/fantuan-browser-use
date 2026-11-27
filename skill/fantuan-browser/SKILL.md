@@ -54,14 +54,24 @@ Each session gets its own color-coded Tab Group (`Fantuan:x-draft`) and can be c
    fantuan-browser -s mytask scroll 600
    ```
 
-5. **Extract content or capture silent background screenshots**:
+5. **Upload files silently (never click file inputs to avoid Finder popups)**:
+   ```bash
+   # Direct injection into <input type="file"> (defaults to first input[type="file"])
+   fantuan-browser -s mytask upload /path/to/image.png
+   fantuan-browser -s mytask upload --selector 'input[type="file"]' /path/to/a.png /path/to/b.png
+
+   # For custom SPA upload buttons that dynamically open a file chooser
+   fantuan-browser -s mytask upload --trigger @12 /path/to/image.png
+   ```
+
+6. **Extract content or capture silent background screenshots**:
    ```bash
    fantuan-browser -s mytask text --max 8000
    fantuan-browser -s mytask eval "document.title"
    fantuan-browser -s mytask screenshot /tmp/page.png
    ```
 
-6. **Clean up when finished** (closes all tabs in your session's Tab Group):
+7. **Clean up when finished** (closes all tabs in your session's Tab Group):
    ```bash
    fantuan-browser -s mytask cleanup
    ```
