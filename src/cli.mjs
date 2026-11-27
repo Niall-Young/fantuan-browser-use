@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { getDefaultSession, getPort } from "./config.mjs";
+import { getDefaultSession, getLocalVersion, getPort } from "./config.mjs";
 import { getHealth, sendCommand, startDaemon, stopDaemon, waitForExtension } from "./client.mjs";
+import { applyReleaseUpdate } from "./updater.mjs";
 
 const HELP_TEXT = `fantuan-browser — Silent, Tab-Group-isolated browser automation for AI agents
 
@@ -14,11 +15,14 @@ Global options:
   -t, --tab <id>         Target specific tab ID inside the session
   --port <port>          Daemon port (default: $FANTUAN_BROWSER_PORT or 19222)
   --json                 Output raw JSON
+  -V, --version          Show CLI version
   -h, --help             Show help
 
 Commands:
   status                              Check daemon & Chrome extension status
   daemon <start|stop|restart|status>  Manage the local bridge daemon
+  update [--check] [--force] [--repo owner/repo]
+                                      Check or install latest GitHub Release for CLI
   sessions                            List all active Fantuan Tab Groups
   open <url>                          Open a new background tab in this session's Tab Group
   goto <url>                          Navigate current session tab (or open if none)
@@ -56,6 +60,7 @@ export function parseArgs(argv) {
     port: getPort(),
     json: false,
     help: false,
+    version: false,
     flags: {},
   };
   const positional = [];
@@ -64,6 +69,8 @@ export function parseArgs(argv) {
     const arg = argv[i];
     if (arg === "-h" || arg === "--help") {
       opts.help = true;
+    } else if (arg === "-V" || arg === "--version") {
+      opts.version = true;
     } else if (arg === "--json") {
       opts.json = true;
     } else if (arg === "-s" || arg === "--session") {
@@ -72,6 +79,12 @@ export function parseArgs(argv) {
       opts.tabId = Number(argv[++i]);
     } else if (arg === "--port") {
       opts.port = Number(argv[++i]);
+    } else if (arg === "--repo") {
+      opts.flags.repo = argv[++i];
+    } else if (arg === "--check") {
+      opts.flags.check = true;
+    } else if (arg === "--force") {
+      opts.flags.force = true;
     } else if (arg === "--selector") {
       opts.flags.selector = argv[++i];
     } else if (arg === "--ref") {
@@ -174,8 +187,44 @@ function formatOutput(command, result, opts) {
 export async function runCli(argv, io = { out: console.log, err: console.error }) {
   const { command, args, opts } = parseArgs(argv);
 
+  if (opts.version || command === "version") {
+    io.out(getLocalVersion());
+    return 0;
+  }
+
   if (opts.help || !command) {
     io.out(HELP_TEXT);
+    return 0;
+  }
+
+  if (command === "update") {
+    const res = await applyReleaseUpdate({
+      repo: opts.flags.repo,
+      checkOnly: Boolean(opts.flags.check),
+      force: Boolean(opts.flags.force),
+      port: opts.port,
+    });
+    if (opts.json) {
+      io.out(JSON.stringify(res, null, 2));
+      return 0;
+    }
+    if (opts.flags.check) {
+      if (res.updateAvailable) {
+        io.out(
+          `Update available: ${res.currentVersion} -> ${res.latestVersion} (${res.tagName})\nRun "fantuan-browser update" to install.\n${res.htmlUrl}`
+        );
+      } else {
+        io.out(`Already up to date (${res.currentVersion}).`);
+      }
+      return 0;
+    }
+    if (res.updated) {
+      io.out(
+        `Updated fantuan-browser: ${res.currentVersion} -> ${res.latestVersion} (${res.tagName})\nInstalled to: ${res.installDir}${res.daemonStopped ? "\nStopped old daemon; next command will start the new version." : ""}`
+      );
+    } else {
+      io.out(`Already up to date (${res.currentVersion}).`);
+    }
     return 0;
   }
 

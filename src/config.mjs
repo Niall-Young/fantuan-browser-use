@@ -1,9 +1,15 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PKG_PATH = path.resolve(__dirname, "..", "package.json");
 
 export const DEFAULT_HOST = "127.0.0.1";
 export const DEFAULT_PORT = 19222;
 export const DEFAULT_SESSION = "default";
+export const DEFAULT_REPO = "Niall-Young/fantuan-browser-use";
 export const REQUEST_TIMEOUT_MS = 35_000;
 export const DEFAULT_IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 export const DEFAULT_EXTENSION_WAIT_MS = 6_500;
@@ -49,4 +55,39 @@ export function getLogFile() {
 
 export function getDefaultSession() {
   return process.env.FANTUAN_BROWSER_SESSION || DEFAULT_SESSION;
+}
+
+export function getInstallDir() {
+  return (
+    process.env.FANTUAN_BROWSER_APP_DIR ||
+    path.join(getStateDir(), "app")
+  );
+}
+
+export function getRepo() {
+  if (process.env.FANTUAN_BROWSER_REPO) {
+    return process.env.FANTUAN_BROWSER_REPO.trim();
+  }
+  try {
+    const pkg = JSON.parse(fs.readFileSync(PKG_PATH, "utf8"));
+    if (typeof pkg.repository === "string" && pkg.repository.includes("/")) {
+      return pkg.repository.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+    }
+    if (pkg.repository?.url) {
+      const m = String(pkg.repository.url).match(/github\.com[/:]([^/]+\/[^/.]+)/);
+      if (m) return m[1];
+    }
+  } catch {
+    // fallback to default
+  }
+  return DEFAULT_REPO;
+}
+
+export function getLocalVersion() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(PKG_PATH, "utf8"));
+    return pkg.version || "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
 }

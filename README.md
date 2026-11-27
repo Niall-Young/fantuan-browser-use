@@ -74,6 +74,10 @@ fantuan-browser -s demo screenshot /tmp/demo.png --annotate
 
 # 4. 任务完成后一键关闭该会话的所有标签页与分组
 fantuan-browser -s demo cleanup
+
+# 5. 检查或升级 CLI 到最新 GitHub Release
+fantuan-browser update --check
+fantuan-browser update
 ```
 
 ### 配置
@@ -84,6 +88,7 @@ fantuan-browser -s demo cleanup
 | `FANTUAN_BROWSER_SESSION` | `default` | 默认会话名（对应 `Fantuan` 或 `Fantuan:<session>` 分组） |
 | `FANTUAN_BROWSER_STATE_DIR` | `~/.fantuan-browser` | 守护进程 PID 与日志目录 |
 | `FANTUAN_BROWSER_IDLE_MS` | `600000` | 守护进程空闲自动退出时间（毫秒，默认 10 分钟；设为 `0` 可禁用自动退出） |
+| `FANTUAN_BROWSER_REPO` | `Niall-Young/fantuan-browser-use` | `fantuan-browser update` 检查 GitHub Release 的仓库名 |
 
 ### 项目结构
 
@@ -182,6 +187,10 @@ fantuan-browser -s demo screenshot /tmp/demo.png --annotate
 
 # 4. Close all tabs in this session's Tab Group when finished
 fantuan-browser -s demo cleanup
+
+# 5. Check for or install the latest GitHub Release for the CLI
+fantuan-browser update --check
+fantuan-browser update
 ```
 
 ### Configuration
@@ -192,6 +201,7 @@ fantuan-browser -s demo cleanup
 | `FANTUAN_BROWSER_SESSION` | `default` | Default session name (`Fantuan` or `Fantuan:<session>` Tab Group) |
 | `FANTUAN_BROWSER_STATE_DIR` | `~/.fantuan-browser` | Directory for daemon PID and log files |
 | `FANTUAN_BROWSER_IDLE_MS` | `600000` | Idle auto-shutdown timeout in ms (default 10 minutes; set `0` to disable) |
+| `FANTUAN_BROWSER_REPO` | `Niall-Young/fantuan-browser-use` | GitHub repository checked by `fantuan-browser update` |
 
 ### Project Structure
 
