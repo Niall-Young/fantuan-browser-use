@@ -1,0 +1,11 @@
+#!/usr/bin/env node
+import { runCli } from "../src/cli.mjs";
+
+runCli(process.argv.slice(2))
+  .then((code) => {
+    process.exit(code);
+  })
+  .catch((err) => {
+    console.error(`[fantuan-browser] ${err.message}`);
+    process.exit(1);
+  });

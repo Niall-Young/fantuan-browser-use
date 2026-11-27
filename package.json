@@ -1,0 +1,18 @@
+{
+  "name": "fantuan-browser-use",
+  "version": "0.1.0",
+  "description": "Silent, Tab-Group-isolated browser automation for AI agents via Chrome MV3 extension + local daemon + CLI",
+  "type": "module",
+  "bin": {
+    "fantuan-browser": "./bin/fantuan-browser"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "daemon": "node src/daemon.mjs",
+    "install-local": "node scripts/install.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT"
+}
