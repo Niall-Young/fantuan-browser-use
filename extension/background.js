@@ -1,3 +1,5 @@
+import { resolveJavaScriptDialogAction } from "./dialog-policy.js";
+
 const DEFAULT_PORT = 19222;
 const GROUP_PREFIX = "Fantuan";
 const GROUP_COLORS = [
@@ -263,16 +265,18 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   }
 
   if (method === "Page.javascriptDialogOpening") {
-    const accept = true;
+    const decision = resolveJavaScriptDialogAction(params);
     recordDialog(tabId, {
-      type: params?.type || "alert",
-      message: String(params?.message || "").slice(0, 500),
-      url: params?.url || "",
-      handled: accept ? "accept" : "dismiss",
+      type: decision.type,
+      message: decision.message,
+      url: decision.url,
+      handled: decision.handled,
       ts: Date.now(),
     });
     chrome.debugger
-      .sendCommand({ tabId }, "Page.handleJavaScriptDialog", { accept })
+      .sendCommand({ tabId }, "Page.handleJavaScriptDialog", {
+        accept: decision.accept,
+      })
       .catch(() => {});
   }
 });

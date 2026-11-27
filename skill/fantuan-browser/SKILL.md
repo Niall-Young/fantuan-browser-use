@@ -55,7 +55,7 @@ Each session gets its own color-coded Tab Group (`Fantuan:x-draft`) and can be c
    fantuan-browser -s mytask wait --text "Results"
    fantuan-browser -s mytask scroll 600
    ```
-   JS dialogs (`alert`/`confirm`/`beforeunload`) are auto-accepted so CDP never hangs, and `target="_blank"` tabs opened from a session tab are automatically captured into the same Tab Group without stealing focus.
+   Informational `alert` dialogs are auto-accepted silently so CDP never hangs, while `confirm`, `prompt`, and `beforeunload` dialogs are dismissed (`accept: false`) by default and reported in `dialogs` so you can inform the user instead of silently confirming destructive actions or discarding drafts. `target="_blank"` tabs opened from a session tab are automatically captured into the same Tab Group without stealing focus.
 
 5. **Upload files silently (never click file inputs to avoid Finder popups)**:
    ```bash
