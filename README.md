@@ -97,6 +97,9 @@ fantuan-browser update
 - `bin/fantuan-browser`：CLI 可执行入口
 - `skill/fantuan-browser/SKILL.md`：面向 AI Agent 的通用 Skill
 - `scripts/install.mjs`：CLI 与 Skill 一键软链安装脚本
+- `scripts/pack-extension.mjs`：Chrome Web Store 扩展 ZIP 打包脚本（输出到 `dist/`）
+- `docs/chrome-web-store/listing.md`：Chrome Web Store 上架文案、权限理由与审核说明
+- `PRIVACY.md`：扩展隐私政策文档
 - `tests/`：基于 `node:test` 的单元测试与端到端测试
 
 ### 开发与验证
@@ -104,6 +107,7 @@ fantuan-browser update
 ```sh
 npm test
 node --check extension/background.js && node --check extension/popup.js
+npm run pack:extension
 ```
 
 ### 常见问题
@@ -210,6 +214,9 @@ fantuan-browser update
 - `bin/fantuan-browser`: Executable CLI entrypoint
 - `skill/fantuan-browser/SKILL.md`: Universal Skill for AI agents
 - `scripts/install.mjs`: Local symlink installer for CLI and Skill
+- `scripts/pack-extension.mjs`: Chrome Web Store extension ZIP packager (outputs to `dist/`)
+- `docs/chrome-web-store/listing.md`: Chrome Web Store listing copy, permission justifications, and reviewer notes
+- `PRIVACY.md`: Extension privacy policy
 - `tests/`: `node:test` unit and end-to-end tests
 
 ### Development and Verification
@@ -217,6 +224,7 @@ fantuan-browser update
 ```sh
 npm test
 node --check extension/background.js && node --check extension/popup.js
+npm run pack:extension
 ```
 
 ### Troubleshooting
