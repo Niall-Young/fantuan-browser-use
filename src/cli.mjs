@@ -28,15 +28,20 @@ Commands:
   close [tabId]                       Close one tab in this session
   cleanup [--all]                     Close all tabs in this session (or all Fantuan sessions)
   info                                Current tab URL, title, viewport, scroll position
-  snapshot [--interactive] [--limit N] Print Accessibility Tree with @ref handles
+  snapshot [--interactive] [--viewport-only] [--limit N]
+                                      Print Accessibility Tree with @ref handles
   click <@ref | x y | --selector css> [--double] [--right]
+  hover <@ref | x y | --selector css> Move mouse over an element
+  select <@ref | --selector css> <value|label>
+                                      Select an option in a <select> element
   type [<@ref | --selector css>] <text> [--clear]
   fill <@ref | --selector css> <text> Focus, clear, and insert text
   press <key>                         Press key or combo (e.g. Enter, Escape, Meta+a)
   scroll <dy> [dx]                    Scroll current tab (positive dy scrolls down)
   text [--selector css] [--max N]     Extract visible page text
   eval <js>                           Evaluate JavaScript in the page
-  screenshot [path] [--full-page]     Save silent background tab screenshot (PNG)
+  screenshot [path] [--full-page] [--annotate]
+                                      Save silent background tab screenshot (PNG)
   upload [@ref] <file...> [--selector css | --trigger @ref|css]
                                       Silently upload local files (no Finder dialog)
   wait <ms | --selector css | --text str> [--timeout ms]
@@ -83,8 +88,12 @@ export function parseArgs(argv) {
       opts.flags.timeoutMs = Number(argv[++i]);
     } else if (arg === "--interactive" || arg === "-i") {
       opts.flags.interactiveOnly = true;
+    } else if (arg === "--viewport-only" || arg === "-v") {
+      opts.flags.viewportOnly = true;
     } else if (arg === "--full-page") {
       opts.flags.fullPage = true;
+    } else if (arg === "--annotate") {
+      opts.flags.annotate = true;
     } else if (arg === "--clear") {
       opts.flags.clear = true;
     } else if (arg === "--all") {
@@ -112,11 +121,18 @@ function formatOutput(command, result, opts) {
 
   switch (command) {
     case "snapshot": {
-      const header = `[tab ${result.tabId}] ${result.title || "(untitled)"} — ${result.url}`;
+      const vp = result.viewport
+        ? ` (viewport ${result.viewport.width}x${result.viewport.height} | ${result.viewport.pixelsAbove}px above | ${result.viewport.pixelsBelow}px below)`
+        : "";
+      const header = `[tab ${result.tabId}] ${result.title || "(untitled)"} — ${result.url}${vp}`;
       const lines = result.items.map((item) => {
         const val = item.value !== undefined ? ` value=${JSON.stringify(item.value)}` : "";
         const name = item.name ? ` ${JSON.stringify(item.name)}` : "";
-        return `${item.ref.padEnd(4)} [${item.role}]${name}${val}`;
+        const states =
+          Array.isArray(item.states) && item.states.length > 0
+            ? ` [${item.states.join(",")}]`
+            : "";
+        return `${item.ref.padEnd(4)} [${item.role}]${name}${val}${states}`;
       });
       return [header, ...lines].join("\n");
     }
@@ -262,6 +278,7 @@ export async function runCli(argv, io = { out: console.log, err: console.error }
         {
           ...baseParams,
           interactiveOnly: Boolean(opts.flags.interactiveOnly),
+          viewportOnly: Boolean(opts.flags.viewportOnly),
           ...(opts.flags.limit ? { limit: opts.flags.limit } : {}),
         },
         clientOpts
@@ -286,6 +303,41 @@ export async function runCli(argv, io = { out: console.log, err: console.error }
         throw new Error("Usage: fantuan-browser click <@ref | x y | --selector css>");
       }
       result = await sendCommand("click", params, clientOpts);
+      break;
+    }
+    case "hover": {
+      const params = { ...baseParams };
+      if (opts.flags.selector) {
+        params.selector = opts.flags.selector;
+      } else if (args[0]?.startsWith("@")) {
+        params.ref = args[0];
+      } else if (args.length >= 2 && !Number.isNaN(Number(args[0])) && !Number.isNaN(Number(args[1]))) {
+        params.x = Number(args[0]);
+        params.y = Number(args[1]);
+      } else if (args[0]) {
+        params.selector = args[0];
+      } else {
+        throw new Error("Usage: fantuan-browser hover <@ref | x y | --selector css>");
+      }
+      result = await sendCommand("hover", params, clientOpts);
+      break;
+    }
+    case "select": {
+      const params = { ...baseParams };
+      if (opts.flags.selector) {
+        params.selector = opts.flags.selector;
+        params.value = args.join(" ");
+      } else if (args[0]?.startsWith("@")) {
+        params.ref = args[0];
+        params.value = args.slice(1).join(" ");
+      } else if (args.length >= 2) {
+        params.selector = args[0];
+        params.value = args.slice(1).join(" ");
+      }
+      if (!params.value) {
+        throw new Error("Usage: fantuan-browser select <@ref | --selector css> <value|label>");
+      }
+      result = await sendCommand("select", params, clientOpts);
       break;
     }
     case "type":
@@ -341,7 +393,11 @@ export async function runCli(argv, io = { out: console.log, err: console.error }
     case "screenshot": {
       const raw = await sendCommand(
         "screenshot",
-        { ...baseParams, fullPage: Boolean(opts.flags.fullPage) },
+        {
+          ...baseParams,
+          fullPage: Boolean(opts.flags.fullPage),
+          annotate: Boolean(opts.flags.annotate),
+        },
         clientOpts
       );
       const outPath = args[0]

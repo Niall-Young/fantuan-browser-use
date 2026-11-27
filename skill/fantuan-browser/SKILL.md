@@ -41,18 +41,21 @@ Each session gets its own color-coded Tab Group (`Fantuan:x-draft`) and can be c
 
 3. **Inspect elements via Accessibility Tree (`snapshot`)** — prefer this over screenshots:
    ```bash
-   fantuan-browser -s mytask snapshot --interactive
+   fantuan-browser -s mytask snapshot --interactive --viewport-only
    ```
-   Output gives short `@ref` handles (`@1`, `@2`, ...) for buttons, links, and inputs.
+   Output gives short `@ref` handles (`@1`, `@2`, ...), viewport scroll progress (`pixelsAbove` / `pixelsBelow`), and element states (`checked`, `disabled`, `expanded`, etc.).
 
 4. **Interact silently in the background**:
    ```bash
    fantuan-browser -s mytask click @5
+   fantuan-browser -s mytask hover @6
+   fantuan-browser -s mytask select @7 "Option Label"
    fantuan-browser -s mytask fill @8 "search query"
    fantuan-browser -s mytask press Enter
    fantuan-browser -s mytask wait --text "Results"
    fantuan-browser -s mytask scroll 600
    ```
+   JS dialogs (`alert`/`confirm`/`beforeunload`) are auto-accepted so CDP never hangs, and `target="_blank"` tabs opened from a session tab are automatically captured into the same Tab Group without stealing focus.
 
 5. **Upload files silently (never click file inputs to avoid Finder popups)**:
    ```bash
@@ -64,11 +67,11 @@ Each session gets its own color-coded Tab Group (`Fantuan:x-draft`) and can be c
    fantuan-browser -s mytask upload --trigger @12 /path/to/image.png
    ```
 
-6. **Extract content or capture silent background screenshots**:
+6. **Extract content or capture silent background screenshots** (add `--annotate` for Set-of-Mark `@ref` overlays):
    ```bash
    fantuan-browser -s mytask text --max 8000
    fantuan-browser -s mytask eval "document.title"
-   fantuan-browser -s mytask screenshot /tmp/page.png
+   fantuan-browser -s mytask screenshot /tmp/page.png --annotate
    ```
 
 7. **Clean up when finished** (closes all tabs in your session's Tab Group):

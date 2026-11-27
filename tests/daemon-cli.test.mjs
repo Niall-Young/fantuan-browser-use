@@ -12,6 +12,7 @@ test("parseArgs parses session, tab, flags, and positional arguments", () => {
     "codex-1",
     "snapshot",
     "--interactive",
+    "--viewport-only",
     "--limit",
     "50",
     "--json",
@@ -20,7 +21,12 @@ test("parseArgs parses session, tab, flags, and positional arguments", () => {
   assert.equal(parsed.opts.session, "codex-1");
   assert.equal(parsed.opts.json, true);
   assert.equal(parsed.opts.flags.interactiveOnly, true);
+  assert.equal(parsed.opts.flags.viewportOnly, true);
   assert.equal(parsed.opts.flags.limit, 50);
+
+  const shotParsed = parseArgs(["screenshot", "/tmp/a.png", "--annotate"]);
+  assert.equal(shotParsed.command, "screenshot");
+  assert.equal(shotParsed.opts.flags.annotate, true);
 });
 
 test("daemon + CLI end-to-end with mock extension", async () => {
@@ -80,11 +86,55 @@ test("daemon + CLI end-to-end with mock extension", async () => {
             tabId: 101,
             url: "https://example.com",
             title: "Example",
+            viewport: {
+              width: 1440,
+              height: 900,
+              scrollX: 0,
+              scrollY: 120,
+              pixelsAbove: 120,
+              pixelsBelow: 800,
+            },
             count: 2,
             items: [
               { ref: "@1", role: "link", name: "More information" },
-              { ref: "@2", role: "textbox", name: "Search", value: "" },
+              {
+                ref: "@2",
+                role: "textbox",
+                name: "Search",
+                value: "",
+                states: ["focused"],
+              },
             ],
+          },
+        })
+      );
+      return;
+    }
+
+    if (msg.action === "hover") {
+      ext.send(
+        JSON.stringify({
+          type: "response",
+          id: msg.id,
+          ok: true,
+          result: {
+            tabId: 101,
+            hovered: { x: 120, y: 240 },
+          },
+        })
+      );
+      return;
+    }
+
+    if (msg.action === "select") {
+      ext.send(
+        JSON.stringify({
+          type: "response",
+          id: msg.id,
+          ok: true,
+          result: {
+            tabId: 101,
+            selected: { value: msg.params.value, label: msg.params.value },
           },
         })
       );
@@ -149,28 +199,61 @@ test("daemon + CLI end-to-end with mock extension", async () => {
   assert.equal(seenActions[0].action, "open");
   assert.equal(seenActions[0].params.session, "orca-worker");
 
-  // 4. Run CLI snapshot
+  // 4. Run CLI snapshot with viewport-only and verify viewport header + states
   out.length = 0;
   const code2 = await runCli(
-    ["--port", String(port), "-s", "orca-worker", "snapshot", "--interactive"],
+    [
+      "--port",
+      String(port),
+      "-s",
+      "orca-worker",
+      "snapshot",
+      "--interactive",
+      "--viewport-only",
+    ],
     io
   );
   assert.equal(code2, 0);
+  assert.match(out[0], /viewport 1440x900 \| 120px above \| 800px below/);
   assert.match(out[0], /@1\s+\[link\] "More information"/);
-  assert.match(out[0], /@2\s+\[textbox\] "Search"/);
+  assert.match(out[0], /@2\s+\[textbox\] "Search" value="" \[focused\]/);
+  const snapAction = seenActions.find((a) => a.action === "snapshot");
+  assert.equal(snapAction.params.viewportOnly, true);
 
-  // 5. Run CLI screenshot and verify file written
+  // 5. Run CLI screenshot with --annotate and verify file written
   const shotPath = path.join(os.tmpdir(), `fantuan-test-${Date.now()}.png`);
   out.length = 0;
   const code3 = await runCli(
-    ["--port", String(port), "-s", "orca-worker", "screenshot", shotPath],
+    ["--port", String(port), "-s", "orca-worker", "screenshot", shotPath, "--annotate"],
     io
   );
   assert.equal(code3, 0);
   assert.equal(out[0], shotPath);
   assert.equal(fs.readFileSync(shotPath, "utf8"), "fake-png-bytes");
+  const shotAction = seenActions.find((a) => a.action === "screenshot");
+  assert.equal(shotAction.params.annotate, true);
 
-  // 6. Run CLI upload (direct & intercept trigger)
+  // 6. Run CLI hover and select
+  out.length = 0;
+  const codeHover = await runCli(
+    ["--port", String(port), "-s", "orca-worker", "hover", "@1"],
+    io
+  );
+  assert.equal(codeHover, 0);
+  const hoverAction = seenActions.find((a) => a.action === "hover");
+  assert.equal(hoverAction.params.ref, "@1");
+
+  out.length = 0;
+  const codeSelect = await runCli(
+    ["--port", String(port), "-s", "orca-worker", "select", "@2", "Option A"],
+    io
+  );
+  assert.equal(codeSelect, 0);
+  const selectAction = seenActions.find((a) => a.action === "select");
+  assert.equal(selectAction.params.ref, "@2");
+  assert.equal(selectAction.params.value, "Option A");
+
+  // 7. Run CLI upload (direct & intercept trigger)
   out.length = 0;
   const code4 = await runCli(
     ["--port", String(port), "-s", "orca-worker", "upload", "--trigger", "@1", shotPath],

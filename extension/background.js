@@ -211,15 +211,69 @@ async function connectWebSocket() {
 
 // Debugger & tab lifecycle cleanup
 const fileChooserWaiters = new Map(); // tabId -> { resolve, reject, timer }
+const tabDialogs = new Map(); // tabId -> Array<{ type, message, url, handled, ts }>
+const recentOpenedTabs = new Map(); // openerTabId -> Array<{ tabId, url }>
+const lastUserActiveTabByWindow = new Map(); // windowId -> tabId
+
+function recordDialog(tabId, entry) {
+  const list = tabDialogs.get(tabId) || [];
+  list.push(entry);
+  if (list.length > 10) list.shift();
+  tabDialogs.set(tabId, list);
+}
+
+function drainDialogs(tabId) {
+  const list = tabDialogs.get(tabId);
+  if (!list || list.length === 0) return [];
+  tabDialogs.delete(tabId);
+  return list;
+}
+
+function drainOpenedTabs(tabId) {
+  const list = recentOpenedTabs.get(tabId);
+  if (!list || list.length === 0) return [];
+  recentOpenedTabs.delete(tabId);
+  return list;
+}
+
+async function isFantuanGroup(groupId) {
+  if (groupId == null || groupId === chrome.tabGroups.TAB_GROUP_ID_NONE) {
+    return false;
+  }
+  try {
+    const group = await chrome.tabGroups.get(groupId);
+    return Boolean(sessionFromTitle(group?.title));
+  } catch {
+    return false;
+  }
+}
 
 chrome.debugger.onEvent.addListener((source, method, params) => {
-  if (method === "Page.fileChooserOpened" && source?.tabId != null) {
-    const waiter = fileChooserWaiters.get(source.tabId);
+  const tabId = source?.tabId;
+  if (tabId == null) return;
+
+  if (method === "Page.fileChooserOpened") {
+    const waiter = fileChooserWaiters.get(tabId);
     if (waiter) {
       clearTimeout(waiter.timer);
-      fileChooserWaiters.delete(source.tabId);
+      fileChooserWaiters.delete(tabId);
       waiter.resolve(params);
     }
+    return;
+  }
+
+  if (method === "Page.javascriptDialogOpening") {
+    const accept = true;
+    recordDialog(tabId, {
+      type: params?.type || "alert",
+      message: String(params?.message || "").slice(0, 500),
+      url: params?.url || "",
+      handled: accept ? "accept" : "dismiss",
+      ts: Date.now(),
+    });
+    chrome.debugger
+      .sendCommand({ tabId }, "Page.handleJavaScriptDialog", { accept })
+      .catch(() => {});
   }
 });
 
@@ -235,9 +289,55 @@ chrome.debugger.onDetach.addListener((source) => {
   }
 });
 
+chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
+  chrome.tabs
+    .get(tabId)
+    .then(async (tab) => {
+      if (!(await isFantuanGroup(tab.groupId))) {
+        lastUserActiveTabByWindow.set(windowId, tabId);
+      }
+    })
+    .catch(() => {});
+});
+
+chrome.tabs.onCreated.addListener((tab) => {
+  if (tab?.openerTabId == null || tab.id == null) return;
+  chrome.tabs
+    .get(tab.openerTabId)
+    .then(async (opener) => {
+      if (!opener || !(await isFantuanGroup(opener.groupId))) return;
+
+      if (tab.groupId !== opener.groupId) {
+        await chrome.tabs.group({
+          tabIds: [tab.id],
+          groupId: opener.groupId,
+        });
+      }
+
+      const opened = recentOpenedTabs.get(opener.id) || [];
+      opened.push({ tabId: tab.id, url: tab.pendingUrl || tab.url || "" });
+      recentOpenedTabs.set(opener.id, opened);
+
+      if (tab.active) {
+        const prevUserTabId = lastUserActiveTabByWindow.get(tab.windowId);
+        if (prevUserTabId != null && prevUserTabId !== tab.id) {
+          await chrome.tabs.update(prevUserTabId, { active: true }).catch(() => {});
+        }
+      }
+    })
+    .catch(() => {});
+});
+
 chrome.tabs.onRemoved.addListener((tabId) => {
   attachedTabs.delete(tabId);
   tabRefMaps.delete(tabId);
+  tabDialogs.delete(tabId);
+  recentOpenedTabs.delete(tabId);
+  for (const [winId, activeId] of lastUserActiveTabByWindow.entries()) {
+    if (activeId === tabId) {
+      lastUserActiveTabByWindow.delete(winId);
+    }
+  }
   for (const [sess, cur] of sessionCurrentTab.entries()) {
     if (cur === tabId) {
       sessionCurrentTab.delete(sess);
@@ -639,12 +739,177 @@ async function cleanupSession(session, all = false) {
   return { sessionsCleaned: sessions, closedTabCount: closedTabs.length, closedTabs };
 }
 
-async function buildSnapshot(tabId, { interactiveOnly = false, limit = 150 } = {}) {
-  const tree = await cdp(tabId, "Accessibility.getFullAXTree");
+const SNAPSHOT_STYLE_PROPS = [
+  "display",
+  "visibility",
+  "opacity",
+  "pointer-events",
+  "cursor",
+];
+
+const AX_STATE_PROPS = new Set([
+  "checked",
+  "disabled",
+  "expanded",
+  "selected",
+  "required",
+  "readonly",
+  "focused",
+]);
+
+function extractAxStates(node) {
+  const states = [];
+  for (const prop of node.properties || []) {
+    if (!AX_STATE_PROPS.has(prop.name)) continue;
+    const val = prop.value?.value;
+    if (val === true || val === "mixed") {
+      states.push(val === "mixed" ? `${prop.name}=mixed` : prop.name);
+    }
+  }
+  return states;
+}
+
+async function captureLayoutIndex(tabId, viewport) {
+  const layoutByBackendId = new Map();
+  const pointerCandidates = [];
+
+  try {
+    const snap = await cdp(tabId, "DOMSnapshot.captureSnapshot", {
+      computedStyles: SNAPSHOT_STYLE_PROPS,
+    });
+    const doc = snap?.documents?.[0];
+    const strings = snap?.strings || [];
+    if (!doc) return { layoutByBackendId, pointerCandidates };
+
+    const backendIds = doc.nodes?.backendNodeId || [];
+    const nodeNames = doc.nodes?.nodeName || [];
+    const nodeIndices = doc.layout?.nodeIndex || [];
+    const bounds = doc.layout?.bounds || [];
+    const styles = doc.layout?.styles || [];
+    const texts = doc.layout?.text || [];
+
+    const scrollX = viewport?.scrollX || 0;
+    const scrollY = viewport?.scrollY || 0;
+    const vpWidth = viewport?.width || 1280;
+    const vpHeight = viewport?.height || 800;
+
+    for (let i = 0; i < nodeIndices.length; i++) {
+      const nodeIdx = nodeIndices[i];
+      const backendNodeId = backendIds[nodeIdx];
+      const rect = bounds[i];
+      if (!backendNodeId || !rect || rect.length < 4) continue;
+
+      const [x, y, width, height] = rect;
+      const styleIdx = styles[i] || [];
+      const display = strings[styleIdx[0]] || "";
+      const visibility = strings[styleIdx[1]] || "";
+      const opacity = Number(strings[styleIdx[2]] ?? "1");
+      const pointerEvents = strings[styleIdx[3]] || "";
+      const cursor = strings[styleIdx[4]] || "";
+
+      const visible =
+        width > 1 &&
+        height > 1 &&
+        display !== "none" &&
+        visibility !== "hidden" &&
+        visibility !== "collapse" &&
+        !(Number.isFinite(opacity) && opacity <= 0.01);
+
+      const inViewport =
+        visible &&
+        x + width > scrollX &&
+        x < scrollX + vpWidth &&
+        y + height > scrollY &&
+        y < scrollY + vpHeight;
+
+      const info = {
+        box: {
+          x: Math.round(x - scrollX),
+          y: Math.round(y - scrollY),
+          width: Math.round(width),
+          height: Math.round(height),
+        },
+        visible,
+        inViewport,
+        cursorPointer: cursor === "pointer" && pointerEvents !== "none",
+      };
+
+      const prev = layoutByBackendId.get(backendNodeId);
+      if (!prev || (!prev.visible && info.visible)) {
+        layoutByBackendId.set(backendNodeId, info);
+      }
+
+      if (
+        info.inViewport &&
+        info.cursorPointer &&
+        width < vpWidth * 0.9 &&
+        height < vpHeight * 0.6
+      ) {
+        const tag = String(strings[nodeNames[nodeIdx]] || "").toLowerCase();
+        const text = String(strings[texts[i]] || "").trim();
+        if (text && tag !== "html" && tag !== "body") {
+          pointerCandidates.push({
+            backendDOMNodeId: backendNodeId,
+            role: "clickable",
+            name: text.slice(0, 160),
+            box: info.box,
+            inViewport: true,
+          });
+        }
+      }
+    }
+  } catch {
+    // Fallback gracefully to pure AXTree when DOMSnapshot is unavailable
+  }
+
+  return { layoutByBackendId, pointerCandidates };
+}
+
+async function getViewportMeta(tabId) {
+  try {
+    return await evalInTab(
+      tabId,
+      `(() => {
+        const width = window.innerWidth || document.documentElement.clientWidth || 0;
+        const height = window.innerHeight || document.documentElement.clientHeight || 0;
+        const scrollX = Math.round(window.scrollX || 0);
+        const scrollY = Math.round(window.scrollY || 0);
+        const scrollHeight = Math.max(
+          document.documentElement?.scrollHeight || 0,
+          document.body?.scrollHeight || 0,
+          height
+        );
+        return {
+          width,
+          height,
+          scrollX,
+          scrollY,
+          pixelsAbove: Math.max(0, scrollY),
+          pixelsBelow: Math.max(0, Math.round(scrollHeight - (scrollY + height))),
+        };
+      })()`
+    );
+  } catch {
+    return null;
+  }
+}
+
+async function buildSnapshot(
+  tabId,
+  { interactiveOnly = false, viewportOnly = false, limit = 150 } = {}
+) {
+  const [tree, viewport] = await Promise.all([
+    cdp(tabId, "Accessibility.getFullAXTree"),
+    getViewportMeta(tabId),
+  ]);
+  const { layoutByBackendId, pointerCandidates } = await captureLayoutIndex(
+    tabId,
+    viewport
+  );
+  const hasLayout = layoutByBackendId.size > 0;
   const nodes = tree?.nodes || [];
-  const refMap = new Map();
-  const items = [];
-  let counter = 0;
+  const candidates = [];
+  const seenBackendIds = new Set();
 
   for (const node of nodes) {
     if (node.ignored) continue;
@@ -662,33 +927,166 @@ async function buildSnapshot(tabId, { interactiveOnly = false, limit = 150 } = {
       continue;
     }
 
-    counter++;
-    const ref = `@${counter}`;
+    const layout = layoutByBackendId.get(backendDOMNodeId);
+    if (hasLayout && layout && !layout.visible) continue;
+    if (viewportOnly && hasLayout && (!layout || !layout.inViewport)) continue;
+
+    seenBackendIds.add(backendDOMNodeId);
     const valueProp = node.value?.value;
+    const states = extractAxStates(node);
     const item = {
-      ref,
       role,
       name: name.slice(0, 160),
       backendDOMNodeId,
+      inViewport: layout ? layout.inViewport : true,
+      box: layout?.box || null,
     };
     if (valueProp !== undefined && valueProp !== "") {
       item.value = String(valueProp).slice(0, 120);
     }
-
-    refMap.set(ref, { backendDOMNodeId, role, name: item.name });
-    items.push(item);
-    if (items.length >= limit) break;
+    if (states.length > 0) {
+      item.states = states;
+    }
+    candidates.push(item);
   }
+
+  // Supplement non-semantic cursor:pointer interactive elements missed by AXTree
+  let pointerAdded = 0;
+  for (const cand of pointerCandidates) {
+    if (pointerAdded >= 30) break;
+    if (seenBackendIds.has(cand.backendDOMNodeId)) continue;
+    seenBackendIds.add(cand.backendDOMNodeId);
+    candidates.push(cand);
+    pointerAdded++;
+  }
+
+  // When exceeding limit, prioritize in-viewport elements while preserving document order
+  let selected = candidates;
+  if (candidates.length > limit) {
+    const inVp = candidates.filter((c) => c.inViewport);
+    if (inVp.length >= limit) {
+      selected = inVp.slice(0, limit);
+    } else {
+      let offVpBudget = limit - inVp.length;
+      selected = candidates.filter((c) => {
+        if (c.inViewport) return true;
+        if (offVpBudget > 0) {
+          offVpBudget--;
+          return true;
+        }
+        return false;
+      });
+    }
+  }
+
+  const refMap = new Map();
+  const items = selected.map((c, idx) => {
+    const ref = `@${idx + 1}`;
+    const item = {
+      ref,
+      role: c.role,
+      name: c.name,
+      backendDOMNodeId: c.backendDOMNodeId,
+      inViewport: c.inViewport,
+    };
+    if (c.value !== undefined) item.value = c.value;
+    if (c.states) item.states = c.states;
+    refMap.set(ref, {
+      backendDOMNodeId: c.backendDOMNodeId,
+      role: c.role,
+      name: c.name,
+      box: c.box,
+      inViewport: c.inViewport,
+    });
+    return item;
+  });
 
   tabRefMaps.set(tabId, refMap);
   const tab = await chrome.tabs.get(tabId);
+  const dialogs = drainDialogs(tabId);
   return {
     tabId,
     url: tab.url || "",
     title: tab.title || "",
+    ...(viewport ? { viewport } : {}),
     count: items.length,
     items,
+    ...(dialogs.length ? { dialogs } : {}),
   };
+}
+
+async function summarizePostAction(tabId, beforeUrl, beforeTitle) {
+  await sleep(80);
+  const summary = {};
+  try {
+    const after = await chrome.tabs.get(tabId);
+    if (after.url && after.url !== beforeUrl) {
+      summary.url = after.url;
+      summary.navigated = true;
+    }
+    if (after.title && after.title !== beforeTitle) {
+      summary.title = after.title;
+    }
+  } catch {
+    // tab may have closed during action
+  }
+  const openedTabs = drainOpenedTabs(tabId);
+  if (openedTabs.length > 0) {
+    summary.openedTabs = openedTabs;
+  }
+  const dialogs = drainDialogs(tabId);
+  if (dialogs.length > 0) {
+    summary.dialogs = dialogs;
+  }
+  return summary;
+}
+
+async function renderAnnotationOverlay(tabId) {
+  let refMap = tabRefMaps.get(tabId);
+  if (!refMap || refMap.size === 0) {
+    await buildSnapshot(tabId, { interactiveOnly: true, viewportOnly: true });
+    refMap = tabRefMaps.get(tabId);
+  }
+  const boxes = [];
+  for (const [ref, entry] of (refMap || new Map()).entries()) {
+    if (!entry.box || !entry.inViewport) continue;
+    boxes.push({ ref, ...entry.box });
+  }
+  const boxesJson = JSON.stringify(boxes);
+  await evalInTab(
+    tabId,
+    `(() => {
+      const id = "__fantuan_annotate_overlay__";
+      document.getElementById(id)?.remove();
+      const root = document.createElement("div");
+      root.id = id;
+      root.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:2147483647;";
+      const palette = ["#2563eb","#dc2626","#16a34a","#9333ea","#ea580c","#0891b2"];
+      const boxes = ${boxesJson};
+      boxes.forEach((b, i) => {
+        const color = palette[i % palette.length];
+        const box = document.createElement("div");
+        box.style.cssText = "position:fixed;box-sizing:border-box;border:2px solid " + color +
+          ";left:" + b.x + "px;top:" + b.y + "px;width:" + b.width + "px;height:" + b.height + "px;";
+        const tag = document.createElement("span");
+        tag.textContent = b.ref;
+        tag.style.cssText = "position:absolute;left:-2px;top:-16px;background:" + color +
+          ";color:#fff;font:bold 11px/14px monospace;padding:1px 4px;border-radius:2px;white-space:nowrap;";
+        box.appendChild(tag);
+        root.appendChild(box);
+      });
+      (document.documentElement || document.body).appendChild(root);
+      return boxes.length;
+    })()`
+  );
+  return boxes.length;
+}
+
+async function removeAnnotationOverlay(tabId) {
+  await evalInTab(
+    tabId,
+    `document.getElementById("__fantuan_annotate_overlay__")?.remove()`
+  ).catch(() => {});
 }
 
 async function dispatchKeyCombo(tabId, combo) {
@@ -852,6 +1250,7 @@ async function handleAction(action, params) {
       const { tab } = await resolveSessionTab(session, params.tabId);
       return buildSnapshot(tab.id, {
         interactiveOnly: Boolean(params.interactiveOnly),
+        viewportOnly: Boolean(params.viewportOnly),
         limit: params.limit || 150,
       });
     }
@@ -860,21 +1259,91 @@ async function handleAction(action, params) {
       const { tab } = await resolveSessionTab(session, params.tabId);
       const coords = await resolveTargetCoords(tab.id, params);
       await clickAt(tab.id, coords.x, coords.y, params.button || "left", params.clickCount || 1);
-      return { tabId: tab.id, clicked: coords };
+      const outcome = await summarizePostAction(tab.id, tab.url, tab.title);
+      return { tabId: tab.id, clicked: coords, ...outcome };
+    }
+
+    case "hover": {
+      const { tab } = await resolveSessionTab(session, params.tabId);
+      const coords = await resolveTargetCoords(tab.id, params);
+      await cdp(tab.id, "Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: coords.x,
+        y: coords.y,
+      });
+      return { tabId: tab.id, hovered: coords };
+    }
+
+    case "select": {
+      const { tab } = await resolveSessionTab(session, params.tabId);
+      if (params.value === undefined || params.value === null) {
+        throw new Error("Missing option value or label to select");
+      }
+      const backendNodeId = await resolveBackendNodeId(tab.id, {
+        ref: params.ref,
+        selector: params.selector,
+      });
+      const resolved = await cdp(tab.id, "DOM.resolveNode", { backendNodeId });
+      const objectId = resolved?.object?.objectId;
+      if (!objectId) {
+        throw new Error("Unable to resolve target <select> element");
+      }
+      const call = await cdp(tab.id, "Runtime.callFunctionOn", {
+        objectId,
+        arguments: [{ value: String(params.value) }],
+        returnByValue: true,
+        functionDeclaration: `function(target) {
+          if (!this || this.tagName !== "SELECT") {
+            throw new Error("Target element is not a <select>");
+          }
+          const opts = Array.from(this.options || []);
+          const match =
+            opts.find((o) => o.value === target) ||
+            opts.find((o) => (o.textContent || "").trim() === target) ||
+            opts.find((o) => (o.textContent || "").trim().toLowerCase() === target.toLowerCase());
+          if (!match) {
+            throw new Error("Option not found: " + target);
+          }
+          this.value = match.value;
+          match.selected = true;
+          this.dispatchEvent(new Event("input", { bubbles: true }));
+          this.dispatchEvent(new Event("change", { bubbles: true }));
+          return { value: match.value, label: (match.textContent || "").trim() };
+        }`,
+      });
+      if (call?.exceptionDetails) {
+        const text =
+          call.exceptionDetails.exception?.description ||
+          call.exceptionDetails.text ||
+          "Select failed";
+        throw new Error(text);
+      }
+      return { tabId: tab.id, selected: call?.result?.value || null };
     }
 
     case "type":
     case "fill": {
       const { tab } = await resolveSessionTab(session, params.tabId);
       const text = params.text ?? "";
+      if (params.ref || params.selector) {
+        try {
+          const backendNodeId = await resolveBackendNodeId(tab.id, {
+            ref: params.ref,
+            selector: params.selector,
+          });
+          await cdp(tab.id, "DOM.focus", { backendNodeId });
+        } catch {
+          // fallback to coordinate click below
+        }
+      }
       if (params.ref || params.selector || (typeof params.x === "number" && typeof params.y === "number")) {
         const coords = await resolveTargetCoords(tab.id, params);
         await clickAt(tab.id, coords.x, coords.y);
       }
       if (action === "fill" || params.clear) {
-        // Select all & delete (works on both macOS & Linux/Windows)
-        await dispatchKeyCombo(tab.id, "Meta+a");
-        await dispatchKeyCombo(tab.id, "Control+a");
+        // Use platform-appropriate select-all (Ctrl+A on macOS moves cursor to line start instead of selecting all)
+        const isMac = /Mac|iPhone|iPad/i.test(navigator.userAgent || "");
+        await dispatchKeyCombo(tab.id, isMac ? "Meta+a" : "Control+a");
         await dispatchKeyCombo(tab.id, "Backspace");
       }
       if (text.length > 0) {
@@ -886,7 +1355,8 @@ async function handleAction(action, params) {
     case "press": {
       const { tab } = await resolveSessionTab(session, params.tabId);
       await dispatchKeyCombo(tab.id, params.key);
-      return { tabId: tab.id, key: params.key };
+      const outcome = await summarizePostAction(tab.id, tab.url, tab.title);
+      return { tabId: tab.id, key: params.key, ...outcome };
     }
 
     case "scroll": {
@@ -947,13 +1417,24 @@ async function handleAction(action, params) {
       if (params.fullPage) {
         captureParams.captureBeyondViewport = true;
       }
-      const res = await cdp(tab.id, "Page.captureScreenshot", captureParams);
-      return {
-        tabId: tab.id,
-        url: tab.url || "",
-        title: tab.title || "",
-        dataBase64: res.data,
-      };
+      let annotatedCount = 0;
+      if (params.annotate) {
+        annotatedCount = await renderAnnotationOverlay(tab.id);
+      }
+      try {
+        const res = await cdp(tab.id, "Page.captureScreenshot", captureParams);
+        return {
+          tabId: tab.id,
+          url: tab.url || "",
+          title: tab.title || "",
+          ...(params.annotate ? { annotatedCount } : {}),
+          dataBase64: res.data,
+        };
+      } finally {
+        if (params.annotate) {
+          await removeAnnotationOverlay(tab.id);
+        }
+      }
     }
 
     case "wait": {

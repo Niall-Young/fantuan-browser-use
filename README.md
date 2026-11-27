@@ -20,7 +20,7 @@
 
 - **零弹窗复用登录态**：直接运行在你的日常 Chrome 中，共享 Cookie 与登录会话。
 - **Tab Group 多 Agent 隔离**：通过 `-s / --session <name>` 或 `FANTUAN_BROWSER_SESSION` 为每个任务创建独立颜色分组，支持一键 `cleanup` 清理，且严格禁止触碰分组外的用户个人标签页。
-- **后台静默操控与截图**：基于 Tab 级 `chrome.debugger`（CDP 1.3），支持后台未激活标签页的无障碍树快照（`snapshot` 输出 `@1`, `@2` 等短句柄）、点击、输入、按键、滚动、静默文件上传（`upload`，绕过系统 Finder 弹窗）、JS 执行、原始 CDP 调用以及静默截图。
+- **后台静默操控与截图**：基于 Tab 级 `chrome.debugger`（CDP 1.3），支持视口感知与状态标注的无障碍树快照（`snapshot --interactive --viewport-only` 输出 `@1`, `@2` 短句柄与滚动进度）、点击、悬停（`hover`）、下拉选择（`select`）、输入、按键、滚动、静默文件上传（`upload`，绕过系统 Finder 弹窗）、JS 弹窗自动防卡死、新开 `target="_blank"` 标签页自动收入当前分组、JS 执行、原始 CDP 调用以及带 `@ref` 编号标注的静默截图（`screenshot --annotate`）。
 - **零外部依赖**：纯 Node.js ESM 实现 RFC 6455 WebSocket 服务端与 HTTP 桥接守护进程，严格校验 `chrome-extension://` Origin 防止跨站劫持。
 - **开箱即用的通用 Skill**：提供 `skill/fantuan-browser/SKILL.md` 及一键安装脚本，适配 Orca 下的多个 AI Agent。
 
@@ -58,17 +58,19 @@ fantuan-browser status
 # 1. 为当前任务开启独立 Tab Group（Fantuan:demo）并在后台打开页面
 fantuan-browser -s demo open https://example.com
 
-# 2. 获取交互元素的无障碍树快照（返回 @1, @2... 句柄）
-fantuan-browser -s demo snapshot --interactive
+# 2. 获取交互元素的无障碍树快照（返回 @1, @2... 句柄与视口滚动进度）
+fantuan-browser -s demo snapshot --interactive --viewport-only
 
-# 3. 后台静默点击、输入、按键、等待、上传文件与截图
+# 3. 后台静默点击、悬停、选择、输入、按键、等待、上传文件与标注截图
 fantuan-browser -s demo click @1
-fantuan-browser -s demo fill @2 "搜索内容"
+fantuan-browser -s demo hover @2
+fantuan-browser -s demo select @3 "选项 A"
+fantuan-browser -s demo fill @4 "搜索内容"
 fantuan-browser -s demo press Enter
 fantuan-browser -s demo wait --text "结果"
 fantuan-browser -s demo upload /path/to/file.png
-fantuan-browser -s demo upload --trigger @3 /path/to/image.png
-fantuan-browser -s demo screenshot /tmp/demo.png
+fantuan-browser -s demo upload --trigger @5 /path/to/image.png
+fantuan-browser -s demo screenshot /tmp/demo.png --annotate
 
 # 4. 任务完成后一键关闭该会话的所有标签页与分组
 fantuan-browser -s demo cleanup
@@ -125,7 +127,7 @@ MIT
 
 - **Zero modal dialogs & shared logins**: Runs inside your regular Chrome profile, preserving cookies and authenticated sessions.
 - **Per-session Tab Group isolation**: Pass `-s / --session <name>` (or `FANTUAN_BROWSER_SESSION`) to give each concurrent agent its own color-coded Tab Group with one-command `cleanup`, while strictly refusing to touch unmanaged personal tabs.
-- **Silent background control & screenshots**: Uses tab-scoped `chrome.debugger` (CDP 1.3) for Accessibility Tree snapshots (`snapshot` with short `@1`, `@2` refs), clicks, text insertion, key combos, scrolling, silent file uploads (`upload`, bypassing OS Finder dialogs), JS evaluation, raw CDP passthrough, and background tab screenshots.
+- **Silent background control & screenshots**: Uses tab-scoped `chrome.debugger` (CDP 1.3) for viewport-aware Accessibility Tree snapshots (`snapshot --interactive --viewport-only` with short `@1`, `@2` refs, element states, and scroll progress), clicks, `hover`, `select`, text insertion, key combos, scrolling, silent file uploads (`upload`, bypassing OS Finder dialogs), auto-handled JS dialogs, automatic capture of `target="_blank"` child tabs into the session Tab Group, JS evaluation, raw CDP passthrough, and Set-of-Mark annotated screenshots (`screenshot --annotate`).
 - **Zero runtime dependencies**: Pure Node.js ESM RFC 6455 WebSocket server and HTTP bridge daemon with strict `chrome-extension://` Origin validation against Cross-Site WebSocket Hijacking.
 - **Universal Agent Skill**: Ships `skill/fantuan-browser/SKILL.md` and a one-command local installer for agents running in Orca (Claude Code, Codex, Antigravity, etc.).
 
@@ -163,17 +165,19 @@ Once `"extensionConnected": true` appears, the bridge is ready (the CLI starts t
 # 1. Open a background tab in an isolated Tab Group (Fantuan:demo)
 fantuan-browser -s demo open https://example.com
 
-# 2. Inspect interactive elements via Accessibility Tree (@1, @2... refs)
-fantuan-browser -s demo snapshot --interactive
+# 2. Inspect interactive elements via Accessibility Tree (@1, @2... refs & scroll progress)
+fantuan-browser -s demo snapshot --interactive --viewport-only
 
-# 3. Interact, upload files, and capture screenshots silently in the background
+# 3. Interact, upload files, and capture annotated screenshots silently in the background
 fantuan-browser -s demo click @1
-fantuan-browser -s demo fill @2 "search query"
+fantuan-browser -s demo hover @2
+fantuan-browser -s demo select @3 "Option A"
+fantuan-browser -s demo fill @4 "search query"
 fantuan-browser -s demo press Enter
 fantuan-browser -s demo wait --text "Results"
 fantuan-browser -s demo upload /path/to/file.png
-fantuan-browser -s demo upload --trigger @3 /path/to/image.png
-fantuan-browser -s demo screenshot /tmp/demo.png
+fantuan-browser -s demo upload --trigger @5 /path/to/image.png
+fantuan-browser -s demo screenshot /tmp/demo.png --annotate
 
 # 4. Close all tabs in this session's Tab Group when finished
 fantuan-browser -s demo cleanup
